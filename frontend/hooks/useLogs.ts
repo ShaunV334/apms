@@ -1,162 +1,193 @@
 import {
-    collection,
-    documentId,
-    getDocs,
-    getFirestore,
-    onSnapshot,
-    query,
-    Timestamp,
-    where,
+  collection,
+  getFirestore,
+  onSnapshot,
+  orderBy,
+  query,
+  Timestamp,
+  where,
 } from "@react-native-firebase/firestore";
 import { useEffect, useState } from "react";
 
 export type MedicineLog = {
   name: string;
   dose: string;
+  status: "taken" | "missed" | "pending";
   scheduledTime: string;
   takenTime: string | null;
-  status: "taken" | "missed" | "pending";
 };
 
 export type DayLog = {
-  date: string; // "YYYY-MM-DD"
+  date: string; // YYYY-MM-DD
   label: string;
+  medicines: MedicineLog[];
   avgHeartRate: number;
   avgHeartRateMin: number;
   avgHeartRateMax: number;
   avgSpo2: number;
   avgSpo2Min: number;
   avgSpo2Max: number;
-  medicines: MedicineLog[];
 };
 
-function buildLabel(dateStr: string): string {
-  const todayMs = new Date().setHours(0, 0, 0, 0);
-  const dMs = new Date(dateStr + "T00:00:00").setHours(0, 0, 0, 0);
-  const diffDays = Math.round((todayMs - dMs) / 86_400_000);
-  const fmt = new Date(dateStr + "T00:00:00").toLocaleDateString("en-US", {
+function dateLabel(dateStr: string): string {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = today.toISOString().split("T")[0];
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = yesterday.toISOString().split("T")[0];
+
+  if (dateStr === todayStr) return "Today";
+  if (dateStr === yesterdayStr) return "Yesterday";
+  return new Date(dateStr + "T00:00:00").toLocaleDateString("en-US", {
+    weekday: "short",
     month: "short",
     day: "numeric",
   });
-  if (diffDays === 0) return `Today — ${fmt}`;
-  if (diffDays === 1) return `Yesterday — ${fmt}`;
-  return fmt;
 }
 
-function avg(arr: number[]): number {
-  return arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
-}
+type VitalDoc = {
+  heartRate: number;
+  spo2: number;
+  timestamp: Timestamp | number;
+};
 
-/**
- * Listens to `logs/{YYYY-MM-DD}` docs for the last `limitDays` days, then
- * fetches `vitals` for the same date range to compute per-day HR / SpO2 stats.
- *
- * logs doc shape:   { medicines: MedicineLog[] }
- * vitals doc shape: { heartRate: number, spo2: number, timestamp: Timestamp }
- */
-export function useLogs(limitDays = 30) {
+type MedicineLogDoc = {
+  medicineId: string;
+  medicineName: string;
+  dose: string;
+  scheduledTime: string;
+  date: string;
+  status: "taken" | "missed" | "pending";
+  takenTime: string | null;
+};
+
+export function useLogs(days = 30) {
   const [logs, setLogs] = useState<DayLog[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let isMounted = true;
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+    since.setHours(0, 0, 0, 0);
+    const sinceTs = Timestamp.fromDate(since);
+    const sinceDateStr = since.toISOString().split("T")[0];
 
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - limitDays);
-    const cutoffStr = cutoff.toISOString().split("T")[0];
+    let vitalsData: VitalDoc[] = [];
+    let medicineLogsData: MedicineLogDoc[] = [];
+    let vitalsLoaded = false;
+    let medicineLogsLoaded = false;
 
-    // Filter by document ID (date string) without orderBy to avoid the
-    // "FieldPath cannot be used with a different orderBy" Firestore restriction.
-    // We sort the results client-side after the snapshot.
-    const logsQuery = query(
-      collection(getFirestore(), "logs"),
-      where(documentId(), ">=", cutoffStr)
-    );
+    function buildLogs() {
+      if (!vitalsLoaded || !medicineLogsLoaded) return;
 
-    const unsubLogs = onSnapshot(
-      logsQuery,
-      async (logsSnap) => {
-        if (!isMounted) return;
+      const vitalsByDate: Record<string, { heartRates: number[]; spo2s: number[] }> = {};
+      for (const v of vitalsData) {
+        const ts =
+          typeof v.timestamp === "number"
+            ? v.timestamp
+            : (v.timestamp as Timestamp).toMillis();
+        const dateStr = new Date(ts).toISOString().split("T")[0];
+        if (!vitalsByDate[dateStr]) vitalsByDate[dateStr] = { heartRates: [], spo2s: [] };
+        vitalsByDate[dateStr].heartRates.push(v.heartRate);
+        vitalsByDate[dateStr].spo2s.push(v.spo2);
+      }
 
-        if (logsSnap.empty) {
-          setLogs([]);
-          setLoading(false);
-          return;
+      const medsByDate: Record<string, MedicineLog[]> = {};
+      for (const m of medicineLogsData) {
+        if (!medsByDate[m.date]) medsByDate[m.date] = [];
+        medsByDate[m.date].push({
+          name: m.medicineName,
+          dose: m.dose,
+          status: m.status,
+          scheduledTime: m.scheduledTime,
+          takenTime: m.takenTime ?? null,
+        });
+      }
+
+      const allDates = Array.from(
+        new Set([...Object.keys(vitalsByDate), ...Object.keys(medsByDate)])
+      ).sort((a, b) => b.localeCompare(a));
+
+      const result: DayLog[] = allDates.map((date) => {
+        const vitals = vitalsByDate[date];
+        const medicines = medsByDate[date] ?? [];
+
+        let avgHeartRate = 0, avgHeartRateMin = 0, avgHeartRateMax = 0;
+        let avgSpo2 = 0, avgSpo2Min = 0, avgSpo2Max = 0;
+
+        if (vitals && vitals.heartRates.length > 0) {
+          const hrs = vitals.heartRates;
+          avgHeartRate = Math.round(hrs.reduce((a, b) => a + b, 0) / hrs.length);
+          avgHeartRateMin = Math.min(...hrs);
+          avgHeartRateMax = Math.max(...hrs);
         }
 
-        // Sort docs newest-first client-side
-        const sortedDocs = [...logsSnap.docs].sort((a, b) =>
-          b.id.localeCompare(a.id)
-        );
-
-        const dates = sortedDocs.map((d) => d.id);
-        const minDate = [...dates].sort()[0];
-        const maxDate = [...dates].sort().at(-1)!;
-
-        const startTs = Timestamp.fromDate(new Date(minDate + "T00:00:00"));
-        const endTs = Timestamp.fromDate(new Date(maxDate + "T23:59:59"));
-
-        try {
-          const vitalsSnap = await getDocs(
-            query(
-              collection(getFirestore(), "vitals"),
-              where("timestamp", ">=", startTs),
-              where("timestamp", "<=", endTs)
-            )
-          );
-
-          if (!isMounted) return;
-
-          // Group vitals by date string
-          const byDate: Record<string, { hrs: number[]; sp: number[] }> = {};
-          vitalsSnap.docs.forEach((d) => {
-            const data = d.data();
-            const dateKey = (data.timestamp as Timestamp)
-              .toDate()
-              .toISOString()
-              .split("T")[0];
-            if (!byDate[dateKey]) byDate[dateKey] = { hrs: [], sp: [] };
-            byDate[dateKey].hrs.push(data.heartRate as number);
-            byDate[dateKey].sp.push(data.spo2 as number);
-          });
-
-          const merged: DayLog[] = sortedDocs.map((d) => {
-            const date = d.id;
-            const data = d.data();
-            const v = byDate[date];
-            const hrs = v?.hrs ?? [];
-            const sp = v?.sp ?? [];
-            return {
-              date,
-              label: buildLabel(date),
-              avgHeartRate: avg(hrs),
-              avgHeartRateMin: hrs.length ? Math.min(...hrs) : 0,
-              avgHeartRateMax: hrs.length ? Math.max(...hrs) : 0,
-              avgSpo2: avg(sp),
-              avgSpo2Min: sp.length ? Math.min(...sp) : 0,
-              avgSpo2Max: sp.length ? Math.max(...sp) : 0,
-              medicines: (data.medicines ?? []) as MedicineLog[],
-            };
-          });
-
-          if (isMounted) setLogs(merged);
-        } catch (err) {
-          console.error("useLogs vitals fetch error:", err);
-        } finally {
-          if (isMounted) setLoading(false);
+        if (vitals && vitals.spo2s.length > 0) {
+          const sp = vitals.spo2s;
+          avgSpo2 = Math.round(sp.reduce((a, b) => a + b, 0) / sp.length);
+          avgSpo2Min = Math.min(...sp);
+          avgSpo2Max = Math.max(...sp);
         }
+
+        return {
+          date,
+          label: dateLabel(date),
+          medicines,
+          avgHeartRate,
+          avgHeartRateMin,
+          avgHeartRateMax,
+          avgSpo2,
+          avgSpo2Min,
+          avgSpo2Max,
+        };
+      });
+
+      setLogs(result);
+      setLoading(false);
+    }
+
+    const unsubVitals = onSnapshot(
+      query(
+        collection(getFirestore(), "vitals"),
+        where("timestamp", ">=", sinceTs),
+        orderBy("timestamp", "desc")
+      ),
+      (snap) => {
+        vitalsData = snap.docs.map((d: { data(): unknown }) => d.data() as VitalDoc);
+        vitalsLoaded = true;
+        buildLogs();
       },
       (err) => {
-        console.error("useLogs error:", err);
-        if (isMounted) setLoading(false);
+        console.error("useLogs vitals error:", err);
+        vitalsLoaded = true;
+        buildLogs();
+      }
+    );
+
+    const unsubMeds = onSnapshot(
+      query(
+        collection(getFirestore(), "medicineLogs"),
+        where("date", ">=", sinceDateStr),
+        orderBy("date", "desc")
+      ),
+      (snap) => {
+        medicineLogsData = snap.docs.map((d: { data(): unknown }) => d.data() as MedicineLogDoc);
+        medicineLogsLoaded = true;
+        buildLogs();
+      },
+      (err) => {
+        console.error("useLogs medicineLogs error:", err);
+        medicineLogsLoaded = true;
+        buildLogs();
       }
     );
 
     return () => {
-      isMounted = false;
-      unsubLogs();
+      unsubVitals();
+      unsubMeds();
     };
-  }, [limitDays]);
+  }, [days]);
 
   return { logs, loading };
 }

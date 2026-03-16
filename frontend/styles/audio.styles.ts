@@ -67,18 +67,26 @@ export const styles = StyleSheet.create((theme) => ({
     letterSpacing: 0.8,
     marginBottom: theme.spacing.sm,
   },
-  textInput: {
-    fontSize: theme.typography.body,
-    color: theme.colors.textPrimary,
-    minHeight: 80,
-    textAlignVertical: "top",
-    lineHeight: 22,
+  recorderSummaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: theme.spacing.sm,
   },
-  charCount: {
+  recorderSummaryLabel: {
+    fontSize: theme.typography.body,
+    color: theme.colors.textSecondary,
+    fontWeight: "500",
+  },
+  recorderSummaryValue: {
+    fontSize: 20,
+    color: theme.colors.textPrimary,
+    fontWeight: "700",
+  },
+  inputHint: {
     fontSize: theme.typography.small,
     color: theme.colors.textSecondary,
-    textAlign: "right",
-    marginTop: theme.spacing.sm,
+    lineHeight: 17,
   },
   // Action row
   actionRow: {
@@ -134,6 +142,27 @@ export const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing.sm,
+  },
+  secondaryActionRow: {
+    flexDirection: "row",
+    gap: theme.spacing.sm,
+  },
+  secondaryButton: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: theme.colors.white,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.lightGray,
+    paddingVertical: 10,
+  },
+  secondaryButtonText: {
+    fontSize: theme.typography.body,
+    fontWeight: "600",
+    color: theme.colors.textPrimary,
   },
   // History
   historySection: {

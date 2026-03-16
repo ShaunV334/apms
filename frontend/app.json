@@ -10,7 +10,10 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.shaunv1337.frontend"
+      "bundleIdentifier": "com.shaunv1337.frontend",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Allow APMS to record and send voice messages to the patient watch."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -21,7 +24,12 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.shaunv1337.frontend"
+      "package": "com.shaunv1337.frontend",
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "output": "static",
@@ -31,6 +39,14 @@
       "@react-native-firebase/app",
       "expo-router",
       "@maplibre/maplibre-react-native",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#1E88E5",
+          "sounds": ["default"]
+        }
+      ],
       [
         "expo-location",
         {

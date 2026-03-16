@@ -1,0 +1,135 @@
+import { StyleSheet } from "react-native-unistyles";
+import "../unistyles";
+
+export const styles = StyleSheet.create((theme) => ({
+  safeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  background: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  hero: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 28,
+    paddingBottom: 24,
+    justifyContent: "center",
+  },
+  topPanel: {
+    backgroundColor: theme.colors.tabBar,
+    borderRadius: 28,
+    paddingHorizontal: 24,
+    paddingVertical: 28,
+    marginBottom: 18,
+  },
+  eyebrow: {
+    color: "#A7B0D8",
+    fontSize: 13,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 1.1,
+    marginBottom: 10,
+  },
+  title: {
+    color: theme.colors.white,
+    fontSize: 34,
+    fontWeight: "800",
+    lineHeight: 40,
+    marginBottom: 10,
+  },
+  subtitle: {
+    color: "#D4D8EE",
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  card: {
+    backgroundColor: theme.colors.white,
+    borderRadius: 28,
+    paddingHorizontal: 20,
+    paddingVertical: 22,
+    shadowColor: "#0A1020",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 24,
+    elevation: 6,
+  },
+  modeRow: {
+    flexDirection: "row",
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.full,
+    padding: 4,
+    marginBottom: 20,
+  },
+  modeButton: {
+    flex: 1,
+    borderRadius: theme.radius.full,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  modeButtonActive: {
+    backgroundColor: theme.colors.tabBar,
+  },
+  modeText: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: theme.colors.textSecondary,
+  },
+  modeTextActive: {
+    color: theme.colors.white,
+  },
+  label: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: theme.colors.textPrimary,
+    marginBottom: 8,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: "#D8DDE8",
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 15,
+    color: theme.colors.textPrimary,
+    marginBottom: 16,
+    backgroundColor: "#FBFCFE",
+  },
+  errorBox: {
+    backgroundColor: "#FDECEC",
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 16,
+  },
+  errorText: {
+    color: theme.colors.red,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "600",
+  },
+  primaryButton: {
+    backgroundColor: theme.colors.blue,
+    borderRadius: 18,
+    paddingVertical: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 56,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.7,
+  },
+  primaryButtonText: {
+    color: theme.colors.white,
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  helperText: {
+    marginTop: 14,
+    color: theme.colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: "center",
+  },
+}));

@@ -1,27 +1,59 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import * as Speech from "expo-speech";
-import { useCallback, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    ScrollView,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  doc,
+  getFirestore,
+  serverTimestamp,
+  setDoc,
+} from "@react-native-firebase/firestore";
+import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
+import * as FileSystem from "expo-file-system/legacy";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useUnistyles } from "react-native-unistyles";
 import { styles } from "../styles/audio.styles";
 
-// Configure your ESP32's address here
-const ESP32_BASE_URL = "http://192.168.1.100";
-const ESP32_TTS_ENDPOINT = `${ESP32_BASE_URL}/speak`;
+const USER_DOC = "default";
+// Cap at 30 s so the base64-encoded clip stays well under Firestore's 1 MB doc limit
+const MAX_RECORDING_MS = 30_000;
+
+const RECORDING_OPTIONS: Audio.RecordingOptions = {
+  android: {
+    extension: ".m4a",
+    outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+    audioEncoder: Audio.AndroidAudioEncoder.AAC,
+    sampleRate: 16_000,
+    numberOfChannels: 1,
+    bitRate: 64_000,
+  },
+  ios: {
+    extension: ".m4a",
+    outputFormat: Audio.IOSOutputFormat.MPEG4AAC,
+    audioQuality: Audio.IOSAudioQuality.MEDIUM,
+    sampleRate: 16_000,
+    numberOfChannels: 1,
+    bitRate: 64_000,
+    linearPCMBitDepth: 16,
+    linearPCMIsBigEndian: false,
+    linearPCMIsFloat: false,
+  },
+  web: {
+    mimeType: "audio/webm",
+    bitsPerSecond: 64_000,
+  },
+};
 
 type MessageStatus = "sent" | "failed";
 
 type HistoryItem = {
   id: string;
-  text: string;
+  durationMs: number;
   timestamp: Date;
   status: MessageStatus;
 };
@@ -30,89 +62,234 @@ function formatTime(date: Date) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+function formatDuration(ms: number | null) {
+  if (!ms || ms < 0) return "0:00";
+  const totalSeconds = Math.floor(ms / 1000);
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
 export default function AudioScreen() {
   const { theme } = useUnistyles();
-  const [inputText, setInputText] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isPlayingPreview, setIsPlayingPreview] = useState(false);
+  const [recordedUri, setRecordedUri] = useState<string | null>(null);
+  const [recordedDurationMs, setRecordedDurationMs] = useState<number | null>(null);
+  const [liveDurationMs, setLiveDurationMs] = useState(0);
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [esp32Connected, setEsp32Connected] = useState<boolean | null>(null);
-  const inputRef = useRef<TextInput>(null);
+  const [watchStatus, setWatchStatus] = useState<"idle" | "queued" | "failed">(
+    "idle"
+  );
 
-  const MAX_CHARS = 300;
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const soundRef = useRef<Audio.Sound | null>(null);
+  const stopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // --- Local TTS preview ---
-  const handlePreview = useCallback(async () => {
-    if (!inputText.trim()) return;
-    const speaking = await Speech.isSpeakingAsync();
-    if (speaking) {
-      Speech.stop();
-      setIsSpeaking(false);
-      return;
+  useEffect(() => {
+    return () => {
+      if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
+      if (soundRef.current) {
+        soundRef.current.unloadAsync().catch(() => undefined);
+        soundRef.current = null;
+      }
+    };
+  }, []);
+
+  const startRecording = useCallback(async () => {
+    if (isRecording || isUploading) return;
+    try {
+      const permission = await Audio.requestPermissionsAsync();
+      if (!permission.granted) {
+        console.warn("Audio permission denied by user");
+        setWatchStatus("failed");
+        return;
+      }
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+        shouldDuckAndroid: true,
+        staysActiveInBackground: false,
+        playThroughEarpieceAndroid: false,
+      });
+
+      const recording = new Audio.Recording();
+      await recording.prepareToRecordAsync(RECORDING_OPTIONS);
+      await recording.startAsync();
+
+      recording.setOnRecordingStatusUpdate((status) => {
+        if (status.isRecording) setLiveDurationMs(status.durationMillis ?? 0);
+      });
+      recording.setProgressUpdateInterval(250);
+
+      recordingRef.current = recording;
+      setIsRecording(true);
+      setWatchStatus("idle");
+
+      if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
+      stopTimerRef.current = setTimeout(() => {
+        stopRecording().catch(() => undefined);
+      }, MAX_RECORDING_MS);
+    } catch (error) {
+      console.error("startRecording error:", error);
+      setWatchStatus("failed");
     }
-    setIsSpeaking(true);
-    Speech.speak(inputText.trim(), {
-      language: "en-US",
-      pitch: 1.0,
-      rate: 0.9,
-      onDone: () => setIsSpeaking(false),
-      onError: () => setIsSpeaking(false),
-      onStopped: () => setIsSpeaking(false),
-    });
-  }, [inputText]);
+  }, [isRecording, isUploading]);
 
-  // --- Send text to ESP32 ---
-  const handleSend = useCallback(async () => {
-    const text = inputText.trim();
-    if (!text || isSending) return;
+  const stopRecording = useCallback(async () => {
+    const recording = recordingRef.current;
+    if (!recording) return;
 
-    setIsSending(true);
+    try {
+      await recording.stopAndUnloadAsync();
+      const status = await recording.getStatusAsync();
+      const uri = recording.getURI();
+
+      setRecordedUri(uri ?? null);
+      setRecordedDurationMs(status.durationMillis ?? liveDurationMs);
+      setIsRecording(false);
+      recordingRef.current = null;
+      setLiveDurationMs(0);
+    } catch (error) {
+      console.error("stopRecording error:", error);
+    } finally {
+      if (stopTimerRef.current) {
+        clearTimeout(stopTimerRef.current);
+        stopTimerRef.current = null;
+      }
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      });
+    }
+  }, [liveDurationMs]);
+
+  const playPreview = useCallback(async () => {
+    if (!recordedUri) return;
+    try {
+      if (soundRef.current) {
+        await soundRef.current.unloadAsync();
+        soundRef.current = null;
+      }
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: recordedUri },
+        { shouldPlay: true }
+      );
+      soundRef.current = sound;
+      setIsPlayingPreview(true);
+
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) return;
+        if (status.didJustFinish) {
+          setIsPlayingPreview(false);
+          sound.unloadAsync().catch(() => undefined);
+          if (soundRef.current === sound) soundRef.current = null;
+        }
+      });
+    } catch (error) {
+      console.error("playPreview error:", error);
+    }
+  }, [recordedUri]);
+
+  const clearRecording = useCallback(() => {
+    setRecordedUri(null);
+    setRecordedDurationMs(null);
+    setLiveDurationMs(0);
+    if (soundRef.current) {
+      soundRef.current.unloadAsync().catch(() => undefined);
+      soundRef.current = null;
+    }
+    setIsPlayingPreview(false);
+  }, []);
+
+  const uploadVoiceMessage = useCallback(async () => {
+    if (!recordedUri || isUploading) return;
+
+    setIsUploading(true);
+    setWatchStatus("idle");
     let status: MessageStatus = "failed";
 
     try {
-      const response = await fetch(ESP32_TTS_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-        signal: AbortSignal.timeout(8000),
+      const messageId = `msg_${Date.now()}`;
+
+      console.log("Voice upload started", { messageId });
+
+      const audioBase64 = await FileSystem.readAsStringAsync(recordedUri, {
+        encoding: FileSystem.EncodingType.Base64,
       });
-      if (response.ok) {
-        status = "sent";
-        setEsp32Connected(true);
-      } else {
-        setEsp32Connected(false);
-      }
-    } catch {
-      setEsp32Connected(false);
+
+      const approxKB = Math.round((audioBase64.length * 3) / 4 / 1024);
+      console.log("Audio encoded for upload", {
+        messageId,
+        approxKB,
+        mimeType: "audio/mp4",
+      });
+
+      await setDoc(
+        doc(getFirestore(), "voiceMessages", USER_DOC),
+        {
+          messageId,
+          patientId: USER_DOC,
+          audioBase64,
+          audioMimeType: "audio/mp4",
+          audioEncoding: "aac",
+          sampleRate: 16_000,
+          channels: 1,
+          bitDepth: 16,
+          durationMs: recordedDurationMs ?? 0,
+          createdAt: serverTimestamp(),
+          status: "pending",
+        },
+        { merge: true }
+      );
+
+      console.log("Voice command document updated", { messageId, patientId: USER_DOC });
+
+      status = "sent";
+      setWatchStatus("queued");
+      clearRecording();
+    } catch (error) {
+      console.error("uploadVoiceMessage failed:", error);
+      setWatchStatus("failed");
     }
 
     const item: HistoryItem = {
       id: Date.now().toString(),
-      text,
+      durationMs: recordedDurationMs ?? 0,
       timestamp: new Date(),
       status,
     };
 
     setHistory((prev) => [item, ...prev]);
-    if (status === "sent") setInputText("");
-    setIsSending(false);
-  }, [inputText, isSending]);
+    setIsUploading(false);
+  }, [clearRecording, isUploading, recordedDurationMs, recordedUri]);
 
   const clearHistory = useCallback(() => setHistory([]), []);
 
-  const connectionLabel =
-    esp32Connected === null ? "Not checked" : esp32Connected ? "ESP32 Online" : "ESP32 Offline";
-  const connectionColor =
-    esp32Connected === null ? theme.colors.textSecondary : esp32Connected ? theme.colors.green : theme.colors.red;
+  const watchLabel =
+    watchStatus === "queued"
+      ? "Queued for watch"
+      : watchStatus === "failed"
+      ? "Delivery failed"
+      : "Ready";
+  const watchColor =
+    watchStatus === "queued"
+      ? theme.colors.green
+      : watchStatus === "failed"
+      ? theme.colors.red
+      : theme.colors.textSecondary;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Audio</Text>
+        <Text style={styles.headerTitle}>Voice Message</Text>
         <View style={styles.connectionBadge}>
-          <View style={[styles.connectionDot, { backgroundColor: connectionColor }]} />
-          <Text style={styles.connectionText}>{connectionLabel}</Text>
+          <View style={[styles.connectionDot, { backgroundColor: watchColor }]} />
+          <Text style={styles.connectionText}>{watchLabel}</Text>
         </View>
       </View>
 
@@ -121,71 +298,82 @@ export default function AudioScreen() {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 120 }}
       >
-        {/* Input Card */}
         <View style={styles.inputSection}>
           <View style={styles.inputCard}>
-            <Text style={styles.inputLabel}>Message to patient</Text>
-            <TextInput
-              ref={inputRef}
-              style={styles.textInput}
-              placeholder="Type a question or message..."
-              placeholderTextColor={theme.colors.textSecondary}
-              value={inputText}
-              onChangeText={(t) => setInputText(t.slice(0, MAX_CHARS))}
-              multiline
-              returnKeyType="default"
-              blurOnSubmit={false}
-            />
-            <Text style={styles.charCount}>
-              {inputText.length}/{MAX_CHARS}
+            <Text style={styles.inputLabel}>Caretaker voice clip</Text>
+            <View style={styles.recorderSummaryRow}>
+              <Text style={styles.recorderSummaryLabel}>Duration</Text>
+              <Text style={styles.recorderSummaryValue}>
+                {isRecording
+                  ? formatDuration(liveDurationMs)
+                  : formatDuration(recordedDurationMs)}
+              </Text>
+            </View>
+            <Text style={styles.inputHint}>
+              Record up to 30 seconds and send the clip to the watch.
             </Text>
           </View>
 
-          {/* Action Buttons */}
           <View style={styles.actionRow}>
-            {/* Preview (local TTS) */}
             <TouchableOpacity
               style={styles.previewButton}
-              onPress={handlePreview}
-              disabled={!inputText.trim()}
+              onPress={isRecording ? stopRecording : startRecording}
+              disabled={isUploading}
               activeOpacity={0.7}
             >
               <Ionicons
-                name={isSpeaking ? "stop-circle-outline" : "volume-high-outline"}
+                name={isRecording ? "stop-circle-outline" : "mic-outline"}
                 size={20}
-                color={inputText.trim() ? theme.colors.textPrimary : theme.colors.textSecondary}
+                color={theme.colors.textPrimary}
               />
               <Text style={styles.previewButtonText}>
-                {isSpeaking ? "Stop" : "Preview"}
+                {isRecording ? "Stop" : "Record"}
               </Text>
             </TouchableOpacity>
 
-            {/* Send to ESP32 */}
             <TouchableOpacity
               style={[
                 styles.sendButton,
-                (!inputText.trim() || isSending) && styles.sendButtonDisabled,
+                (!recordedUri || isUploading) && styles.sendButtonDisabled,
               ]}
-              onPress={handleSend}
-              disabled={!inputText.trim() || isSending}
+              onPress={uploadVoiceMessage}
+              disabled={!recordedUri || isUploading}
               activeOpacity={0.8}
             >
-              {isSending ? (
+              {isUploading ? (
                 <View style={styles.sendingIndicator}>
                   <ActivityIndicator size="small" color={theme.colors.white} />
-                  <Text style={styles.sendButtonText}>Sending…</Text>
+                  <Text style={styles.sendButtonText}>Uploading…</Text>
                 </View>
               ) : (
                 <>
-                  <MaterialCommunityIcons name="broadcast" size={20} color={theme.colors.white} />
-                  <Text style={styles.sendButtonText}>Send to Device</Text>
+                  <MaterialCommunityIcons name="watch-variant" size={20} color={theme.colors.white} />
+                  <Text style={styles.sendButtonText}>Send to Watch</Text>
                 </>
               )}
             </TouchableOpacity>
           </View>
+
+          <View style={styles.secondaryActionRow}>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={playPreview}
+              disabled={!recordedUri || isRecording || isPlayingPreview || isUploading}
+            >
+              <Ionicons name="play-outline" size={18} color={theme.colors.textPrimary} />
+              <Text style={styles.secondaryButtonText}>Preview clip</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={clearRecording}
+              disabled={!recordedUri || isUploading}
+            >
+              <Ionicons name="trash-outline" size={18} color={theme.colors.red} />
+              <Text style={[styles.secondaryButtonText, { color: theme.colors.red }]}>Discard</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* History */}
         <View style={[styles.historySection, { marginTop: 24 }]}>
           <View style={styles.historySectionHeader}>
             <Text style={styles.historySectionTitle}>Sent Messages</Text>
@@ -201,7 +389,7 @@ export default function AudioScreen() {
               <View style={styles.emptyHistoryIcon}>
                 <Ionicons name="chatbubble-outline" size={28} color={theme.colors.textSecondary} />
               </View>
-              <Text style={styles.emptyHistoryText}>No messages sent yet</Text>
+              <Text style={styles.emptyHistoryText}>No voice clips sent yet</Text>
             </View>
           ) : (
             history.map((item) => (
@@ -215,7 +403,7 @@ export default function AudioScreen() {
                     />
                   </View>
                   <View style={styles.historyContent}>
-                    <Text style={styles.historyText}>{item.text}</Text>
+                    <Text style={styles.historyText}>Voice clip ({formatDuration(item.durationMs)})</Text>
                     <View style={styles.historyMeta}>
                       <Text style={styles.historyTime}>{formatTime(item.timestamp)}</Text>
                       <View

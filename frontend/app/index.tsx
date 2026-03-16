@@ -5,11 +5,17 @@ import { LineChart } from "react-native-gifted-charts";
 import PagerView from "react-native-pager-view";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useUnistyles } from "react-native-unistyles";
+import AuthScreen from "../components/AuthScreen";
 import TabBar from "../components/TabBar";
+import { useAuth } from "../hooks/useAuth";
 import { useFallDetection } from "../hooks/useFallDetection";
 import { useMedicines, type Medicine } from "../hooks/useMedicines";
+import { useNotificationSetup } from "../hooks/useNotificationSetup";
 import { useUser } from "../hooks/useUser";
 import { useLatestVitals } from "../hooks/useVitals";
+import { useVitalAlerts } from "../hooks/useVitalAlerts";
+import { useFallAlerts } from "../hooks/useFallAlerts";
+import { useMedicineAlerts } from "../hooks/useMedicineAlerts";
 import AudioScreen from "../screens/audio";
 import LogsScreen from "../screens/logs";
 import MapScreen from "../screens/map";
@@ -49,6 +55,18 @@ function HomeContent() {
   const user = useUser();
   const { medicines } = useMedicines();
   const latestFall = useFallDetection();
+
+  // Set up medicine notifications
+  useNotificationSetup(medicines);
+
+  // Set up vital alerts (heart rate and SpO2)
+  useVitalAlerts();
+
+  // Set up fall detection alerts
+  useFallAlerts();
+
+  // Set up medicine reminder alerts
+  useMedicineAlerts(medicines);
 
   const heartRateData = readings.map((r) => ({ value: r.heartRate }));
   const spo2Data = readings.map((r) => ({ value: r.spo2 }));
@@ -188,7 +206,7 @@ function LoadingPage() {
   );
 }
 
-export default function TabsRoot() {
+function TabsRoot() {
   const [activeIndex, setActiveIndex] = useState(0);
   const [loadedPages, setLoadedPages] = useState([true, false, false, false, false, false]);
   const pagerRef = useRef<PagerView>(null);
@@ -247,4 +265,18 @@ export default function TabsRoot() {
       <TabBar activeIndex={activeIndex} onTabPress={onTabPress} />
     </View>
   );
+}
+
+export default function IndexRoute() {
+  const { authUser, initializing } = useAuth();
+
+  if (initializing) {
+    return <LoadingPage />;
+  }
+
+  if (!authUser) {
+    return <AuthScreen />;
+  }
+
+  return <TabsRoot />;
 }

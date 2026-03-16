@@ -1,7 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import MapLibreGL from "@maplibre/maplibre-react-native";
-import * as Location from "expo-location";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import * as MapLibreGL from "@maplibre/maplibre-react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
     Animated,
     LayoutChangeEvent,
@@ -12,10 +11,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useUnistyles } from "react-native-unistyles";
+import { useLatestWatchLocation } from "../hooks/useWatchLocation";
 import { styles } from "../styles/map.styles";
-
-// MapLibre does not use Mapbox tokens — suppress the warning
-MapLibreGL.setAccessToken(null);
 
 // Blank base style — OSM tiles are added as a RasterSource layer
 const BLANK_MAP_STYLE = JSON.stringify({
@@ -73,15 +70,17 @@ const THUMB_SIZE = 22;
 
 export default function MapScreen() {
   const { theme } = useUnistyles();
-  const cameraRef = useRef<MapLibreGL.Camera>(null);
+  const cameraRef = useRef<MapLibreGL.CameraRef | null>(null);
+  const hasCenteredRef = useRef(false);
+  const {
+    location: watchLocation,
+    loading: watchLocationLoading,
+    error: watchLocationError,
+  } = useLatestWatchLocation();
 
-  // location + permission
-  const [permissionStatus, setPermissionStatus] =
-    useState<Location.PermissionStatus | null>(null);
-  const [patientCoord, setPatientCoord] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
+  const patientCoord = watchLocation
+    ? { latitude: watchLocation.latitude, longitude: watchLocation.longitude }
+    : null;
 
   // safe zone
   const [homeCoord, setHomeCoord] = useState<{
@@ -137,62 +136,19 @@ export default function MapScreen() {
     })
   ).current;
 
-  // ── permission + watch position ──────────────────────────────────────────
-
-  const requestPermission = useCallback(async () => {
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    setPermissionStatus(status);
-  }, []);
-
   useEffect(() => {
-    (async () => {
-      const { status } = await Location.getForegroundPermissionsAsync();
-      setPermissionStatus(status);
-    })();
-  }, []);
+    if (!patientCoord) return;
 
-  useEffect(() => {
-    if (permissionStatus !== Location.PermissionStatus.GRANTED) return;
+    if (!homeCoord) setHomeCoord(patientCoord);
 
-    let sub: Location.LocationSubscription | null = null;
-
-    (async () => {
-      // Get quick initial fix
-      const last = await Location.getLastKnownPositionAsync({});
-      if (last) {
-        const coord = {
-          latitude: last.coords.latitude,
-          longitude: last.coords.longitude,
-        };
-        setPatientCoord(coord);
-        if (!homeCoord) setHomeCoord(coord);
-        cameraRef.current?.setCamera({
-          centerCoordinate: [coord.longitude, coord.latitude],
-          zoomLevel: 14,
-          animationDuration: 600,
-        });
-      }
-
-      // Continuous watch
-      sub = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          distanceInterval: 5, // update every 5 m moved
-          timeInterval: 5000,
-        },
-        (loc) => {
-          const coord = {
-            latitude: loc.coords.latitude,
-            longitude: loc.coords.longitude,
-          };
-          setPatientCoord(coord);
-        }
-      );
-    })();
-
-    return () => { sub?.remove(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [permissionStatus]);
+    if (hasCenteredRef.current) return;
+    cameraRef.current?.setCamera({
+      centerCoordinate: [patientCoord.longitude, patientCoord.latitude],
+      zoomLevel: 14,
+      animationDuration: 600,
+    });
+    hasCenteredRef.current = true;
+  }, [patientCoord, homeCoord]);
 
   // ── set home to current position ────────────────────────────────────────
 
@@ -236,26 +192,23 @@ export default function MapScreen() {
     extrapolate: "clamp",
   });
 
-  // ── permission gate ──────────────────────────────────────────────────────
+  // ── watch GPS waiting state ──────────────────────────────────────────────
 
-  if (permissionStatus !== Location.PermissionStatus.GRANTED) {
+  if (watchLocationLoading || !patientCoord) {
     return (
       <SafeAreaView style={styles.safeArea} edges={["top"]}>
         <View style={styles.permissionContainer}>
           <View style={styles.permissionIcon}>
             <Ionicons name="location" size={36} color={theme.colors.blue} />
           </View>
-          <Text style={styles.permissionTitle}>Location Permission Needed</Text>
+          <Text style={styles.permissionTitle}>Waiting for Watch GPS</Text>
           <Text style={styles.permissionSub}>
-            APMS needs access to location to monitor the patient's safe zone and
-            alert you when they wander too far.
+            Turn on the watch outdoors and wait for a Neo-6M GPS fix. The map
+            and geofence will update automatically when the watch uploads location.
           </Text>
-          <TouchableOpacity
-            style={styles.permissionButton}
-            onPress={requestPermission}
-          >
-            <Text style={styles.permissionButtonText}>Allow Location</Text>
-          </TouchableOpacity>
+          {!!watchLocationError && (
+            <Text style={styles.permissionSub}>Data error: {watchLocationError}</Text>
+          )}
         </View>
       </SafeAreaView>
     );
@@ -284,7 +237,7 @@ export default function MapScreen() {
       {/* Map */}
       <MapLibreGL.MapView
         style={styles.map}
-        styleJSON={BLANK_MAP_STYLE}
+        mapStyle={BLANK_MAP_STYLE}
         logoEnabled={false}
         attributionEnabled
         compassEnabled

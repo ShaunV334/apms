@@ -24,7 +24,6 @@ export type VitalReading = {
  */
 export function useLatestVitals(n = 10) {
   const [readings, setReadings] = useState<VitalReading[]>([]);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const q = query(
@@ -48,11 +47,9 @@ export function useLatestVitals(n = 10) {
         });
         // Reverse so oldest is first (left → right on chart)
         setReadings(docs.reverse());
-        setLoading(false);
       },
       (err) => {
         console.error("useLatestVitals error:", err);
-        setLoading(false);
       }
     );
     return unsub;
@@ -62,7 +59,6 @@ export function useLatestVitals(n = 10) {
 
   return {
     readings,
-    loading,
     currentHeartRate: latest?.heartRate ?? null,
     currentSpo2: latest?.spo2 ?? null,
   };
