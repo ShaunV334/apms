@@ -16,6 +16,7 @@ import { useLatestVitals } from "../hooks/useVitals";
 import { useVitalAlerts } from "../hooks/useVitalAlerts";
 import { useFallAlerts } from "../hooks/useFallAlerts";
 import { useMedicineAlerts } from "../hooks/useMedicineAlerts";
+import { useGeofenceAlerts } from "../hooks/useGeofenceAlerts";
 import AudioScreen from "../screens/audio";
 import LogsScreen from "../screens/logs";
 import MapScreen from "../screens/map";
@@ -67,6 +68,9 @@ function HomeContent() {
 
   // Set up medicine reminder alerts
   useMedicineAlerts(medicines);
+
+  // Set up geofence breach alerts
+  useGeofenceAlerts();
 
   const heartRateData = readings.map((r) => ({ value: r.heartRate }));
   const spo2Data = readings.map((r) => ({ value: r.spo2 }));

@@ -184,3 +184,23 @@ export async function sendVitalAlert(
     console.error("Error sending vital alert:", error);
   }
 }
+
+export async function sendGeofenceAlert(
+  title: string,
+  body: string
+): Promise<void> {
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title,
+        body,
+        data: { alertType: "geofence" },
+        sound: "default",
+      },
+      trigger: null,
+    });
+    console.log(`Sent geofence alert: ${title}`);
+  } catch (error) {
+    console.error("Error sending geofence alert:", error);
+  }
+}

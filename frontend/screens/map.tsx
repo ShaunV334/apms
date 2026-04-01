@@ -11,6 +11,13 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useUnistyles } from "react-native-unistyles";
+import {
+  DEFAULT_GEOFENCE_RADIUS,
+  MAX_GEOFENCE_RADIUS,
+  MIN_GEOFENCE_RADIUS,
+  useGeofenceSettings,
+  haversineMetres,
+} from "../hooks/useGeofenceSettings";
 import { useLatestWatchLocation } from "../hooks/useWatchLocation";
 import { styles } from "../styles/map.styles";
 
@@ -40,30 +47,12 @@ function buildCircleGeoJSON(
   return { type: "Feature", geometry: { type: "Polygon", coordinates: [coords] }, properties: {} };
 }
 
-/** Haversine distance in metres between two lat/lng points */
-function haversineMetres(
-  lat1: number, lon1: number,
-  lat2: number, lon2: number
-): number {
-  const R = 6_371_000;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 function formatDistance(m: number): string {
   if (m >= 1000) return `${(m / 1000).toFixed(2)} km`;
   return `${Math.round(m)} m`;
 }
 
 // ─── constants ────────────────────────────────────────────────────────────────
-
-const MIN_RADIUS = 50;   // metres
-const MAX_RADIUS = 1000; // metres
 const THUMB_SIZE = 22;
 
 // ─── component ────────────────────────────────────────────────────────────────
@@ -77,6 +66,13 @@ export default function MapScreen() {
     loading: watchLocationLoading,
     error: watchLocationError,
   } = useLatestWatchLocation();
+  const {
+    settings: geofenceSettings,
+    loading: geofenceLoading,
+    error: geofenceError,
+    canEdit,
+    saveSettings,
+  } = useGeofenceSettings();
 
   const patientCoord = watchLocation
     ? { latitude: watchLocation.latitude, longitude: watchLocation.longitude }
@@ -87,7 +83,7 @@ export default function MapScreen() {
     latitude: number;
     longitude: number;
   } | null>(null);
-  const [radius, setRadius] = useState(200); // metres
+  const [radius, setRadius] = useState(DEFAULT_GEOFENCE_RADIUS); // metres
 
   // derived
   const distanceFromHome =
@@ -102,12 +98,38 @@ export default function MapScreen() {
 
   // slider — ratio based (0 = MIN_RADIUS, 1 = MAX_RADIUS)
   const sliderRatio = useRef(
-    new Animated.Value((radius - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS))
+    new Animated.Value(
+      (DEFAULT_GEOFENCE_RADIUS - MIN_GEOFENCE_RADIUS) /
+        (MAX_GEOFENCE_RADIUS - MIN_GEOFENCE_RADIUS)
+    )
   ).current;
   const trackWidthRef = useRef(0);
   const [trackWidth, setTrackWidth] = useState(0);
   const startRatioRef = useRef(0);
   const liveRadiusRef = useRef(radius);
+
+  useEffect(() => {
+    const nextHome =
+      geofenceSettings.homeLatitude !== null && geofenceSettings.homeLongitude !== null
+        ? {
+            latitude: geofenceSettings.homeLatitude,
+            longitude: geofenceSettings.homeLongitude,
+          }
+        : null;
+
+    setHomeCoord(nextHome);
+    setRadius(geofenceSettings.radius);
+    liveRadiusRef.current = geofenceSettings.radius;
+    sliderRatio.setValue(
+      (geofenceSettings.radius - MIN_GEOFENCE_RADIUS) /
+        (MAX_GEOFENCE_RADIUS - MIN_GEOFENCE_RADIUS)
+    );
+  }, [
+    geofenceSettings.homeLatitude,
+    geofenceSettings.homeLongitude,
+    geofenceSettings.radius,
+    sliderRatio,
+  ]);
 
   function onTrackLayout(e: LayoutChangeEvent) {
     const w = e.nativeEvent.layout.width;
@@ -128,10 +150,18 @@ export default function MapScreen() {
         if (tw === 0) return;
         const newRatio = Math.min(1, Math.max(0, startRatioRef.current + gs.dx / tw));
         sliderRatio.setValue(newRatio);
-        liveRadiusRef.current = Math.round(MIN_RADIUS + newRatio * (MAX_RADIUS - MIN_RADIUS));
+        liveRadiusRef.current = Math.round(
+          MIN_GEOFENCE_RADIUS + newRatio * (MAX_GEOFENCE_RADIUS - MIN_GEOFENCE_RADIUS)
+        );
       },
       onPanResponderRelease: () => {
-        setRadius(liveRadiusRef.current);
+        const nextRadius = liveRadiusRef.current;
+        setRadius(nextRadius);
+        if (canEdit) {
+          saveSettings({ radius: nextRadius }).catch((err) => {
+            console.error("Failed to save geofence radius:", err);
+          });
+        }
       },
     })
   ).current;
@@ -139,7 +169,17 @@ export default function MapScreen() {
   useEffect(() => {
     if (!patientCoord) return;
 
-    if (!homeCoord) setHomeCoord(patientCoord);
+    if (!homeCoord) {
+      setHomeCoord(patientCoord);
+      if (!geofenceLoading && canEdit) {
+        saveSettings({
+          homeLatitude: patientCoord.latitude,
+          homeLongitude: patientCoord.longitude,
+        }).catch((err) => {
+          console.error("Failed to save default geofence home:", err);
+        });
+      }
+    }
 
     if (hasCenteredRef.current) return;
     cameraRef.current?.setCamera({
@@ -148,13 +188,22 @@ export default function MapScreen() {
       animationDuration: 600,
     });
     hasCenteredRef.current = true;
-  }, [patientCoord, homeCoord]);
+  }, [patientCoord, homeCoord, geofenceLoading, canEdit, saveSettings]);
 
   // ── set home to current position ────────────────────────────────────────
 
   function setHomeHere() {
     if (!patientCoord) return;
-    setHomeCoord({ ...patientCoord });
+    const nextHome = { ...patientCoord };
+    setHomeCoord(nextHome);
+    if (!canEdit) return;
+
+    saveSettings({
+      homeLatitude: nextHome.latitude,
+      homeLongitude: nextHome.longitude,
+    }).catch((err) => {
+      console.error("Failed to save geofence home:", err);
+    });
   }
 
   // ── centre map on patient ────────────────────────────────────────────────
@@ -194,7 +243,7 @@ export default function MapScreen() {
 
   // ── watch GPS waiting state ──────────────────────────────────────────────
 
-  if (watchLocationLoading || !patientCoord) {
+  if (watchLocationLoading || geofenceLoading || !patientCoord) {
     return (
       <SafeAreaView style={styles.safeArea} edges={["top"]}>
         <View style={styles.permissionContainer}>
@@ -208,6 +257,9 @@ export default function MapScreen() {
           </Text>
           {!!watchLocationError && (
             <Text style={styles.permissionSub}>Data error: {watchLocationError}</Text>
+          )}
+          {!!geofenceError && (
+            <Text style={styles.permissionSub}>Geofence error: {geofenceError}</Text>
           )}
         </View>
       </SafeAreaView>
@@ -438,10 +490,17 @@ export default function MapScreen() {
         </View>
 
         {/* Set home button */}
-        <TouchableOpacity style={styles.setZoneButton} onPress={setHomeHere}>
+        <TouchableOpacity
+          style={[styles.setZoneButton, !canEdit && { opacity: 0.6 }]}
+          onPress={setHomeHere}
+          disabled={!canEdit}
+        >
           <Ionicons name="home" size={18} color={theme.colors.white} />
-          <Text style={styles.setZoneButtonText}>Set Safe Zone to Current Location</Text>
+          <Text style={styles.setZoneButtonText}>
+            {canEdit ? "Set Safe Zone to Current Location" : "Safe Zone is read-only"}
+          </Text>
         </TouchableOpacity>
+        {!!geofenceError && <Text style={styles.permissionSub}>Geofence error: {geofenceError}</Text>}
         <View style={{ height: 80 }} />
       </View>
     </View>
